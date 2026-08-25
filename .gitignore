@@ -33,3 +33,6 @@ Thumbs.db
 
 # --- misc ---
 *.log
+
+# --- local tooling caches ---
+.impeccable/
