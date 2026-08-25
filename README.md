@@ -203,8 +203,10 @@ The suite covers password hashing, token rotation and revocation, tenant isolati
 the completion rules the metrics depend on, aggregate correctness, the error envelope, and a
 migration test that asserts `alembic upgrade head` produces the same schema as the models.
 
-GitHub Actions runs on every push and pull request: Ruff lint and format check, the backend test
-suite, ESLint, and a production frontend build.
+GitHub Actions runs on every push and pull request: Ruff lint and format check, the backend suite
+on SQLite, **the same suite again against a real PostgreSQL 16 service** (so the two engines cannot
+quietly diverge), a migration up/down/up cycle, ESLint, a production frontend build, and a Docker
+build of both images.
 
 ---
 

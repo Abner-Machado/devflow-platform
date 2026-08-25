@@ -1,10 +1,13 @@
 """Test fixtures.
 
-Every test runs against a private in-memory SQLite database created from the
-SQLAlchemy metadata, so the suite needs no external service and leaves no files
-behind. The schema itself is verified separately by the migration test.
+By default every test runs against a private in-memory SQLite database created
+from the SQLAlchemy metadata, so the suite needs no external service and leaves
+no files behind. Setting TEST_DATABASE_URL points the same suite at a real
+server - CI uses that to run everything a second time against PostgreSQL, which
+is what keeps the two engines from quietly diverging.
 """
 
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -17,14 +20,22 @@ from app.db.session import get_db
 from app.main import create_app
 from app.models import Base
 
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "sqlite://")
+
 
 @pytest.fixture
 def db_session() -> Iterator[Session]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,  # one shared connection, so :memory: survives between calls
-    )
+    if TEST_DATABASE_URL.startswith("sqlite"):
+        engine = create_engine(
+            TEST_DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,  # one shared connection, so :memory: survives between calls
+        )
+    else:
+        engine = create_engine(TEST_DATABASE_URL)
+
+    # Drop first: a previous run that crashed mid-test can leave tables behind.
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
     session = factory()
