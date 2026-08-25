@@ -107,6 +107,7 @@ frontend/
     pages/         one module per screen
     styles/        the whole design system, tokens first
 docs/              architecture, development guide, API examples
+scripts/           one-command local bootstrap (bash and PowerShell)
 .github/workflows/ CI
 ```
 
