@@ -1,0 +1,35 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- databases ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- node ---
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# --- editors and os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- misc ---
+*.log
