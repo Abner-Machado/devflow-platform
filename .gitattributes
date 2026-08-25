@@ -1,0 +1,11 @@
+# Normalise to LF in the repository; check out native on Windows.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows, PowerShell prefers CRLF.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.ico binary
