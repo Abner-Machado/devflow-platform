@@ -2,8 +2,8 @@ name: Daily Maintenance
 
 on:
   schedule:
-    # Run daily at 03:00 UTC
-    - cron: '0 3 * * *'
+    # Run daily at 06:00 AM Brasília time (09:00 UTC, or 08:00 UTC during daylight saving)
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 permissions:

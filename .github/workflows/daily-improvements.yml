@@ -2,8 +2,8 @@ name: Daily Improvements
 
 on:
   schedule:
-    # Run daily at 02:00 UTC (separate from security checks)
-    - cron: '0 2 * * *'
+    # Removed - consolidated into single daily workflow at 06:00 AM
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 permissions:
