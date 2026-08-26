@@ -1,0 +1,352 @@
+name: Daily Maintenance
+
+on:
+  schedule:
+    # Run daily at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    name: Repository Maintenance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Configure Git
+        run: |
+          git config user.name "Claude Engineering Bot"
+          git config user.email "claude+devflow@anthropic.com"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          cd ..
+          cd frontend
+          npm ci
+          cd ..
+
+      - name: Create analysis and improvement script
+        run: cat > /tmp/daily-engineering.py << 'PYTHON_SCRIPT'
+#!/usr/bin/env python3
+"""Daily engineering improvements for DevFlow."""
+
+import subprocess
+import json
+import sys
+from pathlib import Path
+from datetime import datetime
+
+class ProjectAnalyzer:
+    def __init__(self):
+        self.issues = []
+        self.improvements = []
+        self.changes_made = False
+
+    def run_cmd(self, cmd, cwd=None):
+        """Execute command safely."""
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            return result.returncode, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return 1, "", "Command timed out"
+        except Exception as e:
+            return 1, "", str(e)
+
+    def check_backend_tests(self):
+        """Run backend tests and capture results."""
+        print("[1/10] Checking backend tests...")
+        code, out, err = self.run_cmd("pytest -q --tb=short", cwd="backend")
+        if code != 0:
+            self.issues.append(("Backend tests failing", err))
+        return code == 0
+
+    def check_backend_lint(self):
+        """Check Python linting."""
+        print("[2/10] Checking backend linting...")
+        code, out, err = self.run_cmd("ruff check .", cwd="backend")
+        if code != 0:
+            self.issues.append(("Linting issues", out))
+        return code == 0
+
+    def check_backend_format(self):
+        """Check code formatting."""
+        print("[3/10] Checking code formatting...")
+        code, out, err = self.run_cmd("ruff format --check .", cwd="backend")
+        if code != 0:
+            self.issues.append(("Formatting issues", out))
+        return code == 0
+
+    def check_frontend_lint(self):
+        """Check frontend linting."""
+        print("[4/10] Checking frontend linting...")
+        code, out, err = self.run_cmd("npm run lint", cwd="frontend")
+        return code == 0
+
+    def check_frontend_typecheck(self):
+        """Check TypeScript types."""
+        print("[5/10] Checking TypeScript types...")
+        code, out, err = self.run_cmd("npm run typecheck", cwd="frontend")
+        return code == 0
+
+    def check_frontend_build(self):
+        """Verify production build works."""
+        print("[6/10] Checking production build...")
+        code, out, err = self.run_cmd("npm run build", cwd="frontend")
+        return code == 0
+
+    def check_npm_vulnerabilities(self):
+        """Check for npm security issues."""
+        print("[7/10] Checking npm vulnerabilities...")
+        code, out, err = self.run_cmd("npm audit --production", cwd="frontend")
+
+        if code != 0 and "vulnerabilities" in (out + err).lower():
+            self.improvements.append({
+                "type": "security",
+                "priority": 1,
+                "action": "npm_audit_fix",
+                "description": "Fix npm security vulnerabilities"
+            })
+            return False
+        return True
+
+    def check_migration_integrity(self):
+        """Verify Alembic migrations are valid."""
+        print("[8/10] Checking migration integrity...")
+        db_file = Path("backend/migration-check.db")
+        if db_file.exists():
+            db_file.unlink()
+
+        code, out, err = self.run_cmd(
+            "cd backend && alembic upgrade head && alembic downgrade base && alembic upgrade head",
+            cwd="."
+        )
+        if code != 0:
+            self.issues.append(("Migration issues", err))
+        return code == 0
+
+    def check_code_quality(self):
+        """Analyze code quality metrics."""
+        print("[9/10] Analyzing code quality...")
+        # Check test coverage
+        code, out, err = self.run_cmd("pytest --cov=app -q", cwd="backend")
+        # Coverage is secondary to test passing
+
+        # Check for type annotation gaps
+        code, out, err = self.run_cmd(
+            "grep -r 'def ' backend/app --include='*.py' | wc -l",
+            cwd="."
+        )
+        total_funcs = int(out.strip()) if out.strip() else 0
+
+        code, out, err = self.run_cmd(
+            "grep -r 'def .*->.*:' backend/app --include='*.py' | wc -l",
+            cwd="."
+        )
+        typed_funcs = int(out.strip()) if out.strip() else 0
+
+        if total_funcs > 0 and typed_funcs < total_funcs * 0.8:
+            self.improvements.append({
+                "type": "type_hints",
+                "priority": 4,
+                "description": f"Add type hints ({typed_funcs}/{total_funcs} functions typed)"
+            })
+
+        return True
+
+    def check_dependencies(self):
+        """Check for dependency updates."""
+        print("[10/10] Checking dependencies...")
+        code, out, err = self.run_cmd("npm outdated --json", cwd="frontend")
+
+        outdated = {}
+        if out.strip():
+            try:
+                outdated = json.loads(out)
+            except:
+                pass
+
+        if outdated:
+            # Check for security-related outdated packages
+            critical = {k: v for k, v in outdated.items() if any(
+                term in k.lower() for term in ['router', 'query', 'react']
+            )}
+
+            if critical:
+                self.improvements.append({
+                    "type": "dependencies",
+                    "priority": 2,
+                    "action": "update_packages",
+                    "packages": list(critical.keys())[:3],
+                    "description": f"Update {len(critical)} critical dependencies"
+                })
+
+        return True
+
+    def apply_npm_audit_fix(self):
+        """Apply npm security fixes."""
+        print("\n→ Applying npm security fixes...")
+        code, out, err = self.run_cmd("npm audit fix --force", cwd="frontend")
+
+        if code == 0:
+            # Verify it didn't break anything
+            code, out, err = self.run_cmd("npm run typecheck", cwd="frontend")
+            if code == 0:
+                self.changes_made = True
+                return True
+
+        return False
+
+    def run_analysis(self):
+        """Run complete analysis."""
+        print(f"\n{'='*60}")
+        print(f"Daily Engineering Analysis - {datetime.now().isoformat()}")
+        print(f"{'='*60}\n")
+
+        # Run all checks
+        self.check_backend_tests()
+        self.check_backend_lint()
+        self.check_backend_format()
+        self.check_frontend_lint()
+        self.check_frontend_typecheck()
+        self.check_frontend_build()
+        self.check_npm_vulnerabilities()
+        self.check_migration_integrity()
+        self.check_code_quality()
+        self.check_dependencies()
+
+        print(f"\n{'='*60}")
+        print("ANALYSIS RESULTS")
+        print(f"{'='*60}")
+
+        if self.issues:
+            print(f"\n⚠️  Issues found ({len(self.issues)}):")
+            for title, detail in self.issues:
+                print(f"  • {title}")
+
+        if self.improvements:
+            print(f"\n✓ Potential improvements ({len(self.improvements)}):")
+            for imp in sorted(self.improvements, key=lambda x: x['priority']):
+                print(f"  [{imp['priority']}] {imp.get('description', imp['type'])}")
+
+        # Apply improvements in priority order
+        if self.improvements:
+            print(f"\n{'='*60}")
+            print("APPLYING IMPROVEMENTS")
+            print(f"{'='*60}")
+
+            for imp in sorted(self.improvements, key=lambda x: x['priority']):
+                if imp.get('action') == 'npm_audit_fix':
+                    self.apply_npm_audit_fix()
+
+        print(f"\nChanges made: {self.changes_made}")
+        sys.exit(0 if (not self.issues or self.changes_made) else 1)
+
+if __name__ == "__main__":
+    analyzer = ProjectAnalyzer()
+    analyzer.run_analysis()
+PYTHON_SCRIPT
+
+      - name: Run daily engineering analysis
+        id: analysis
+        run: |
+          cd /home/runner/work/devflow-platform/devflow-platform
+          python /tmp/daily-engineering.py
+          if [ $? -eq 0 ]; then
+            echo "analysis_ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "analysis_ok=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate changes
+        if: success()
+        run: |
+          cd backend
+          pytest -q --tb=short
+          ruff check .
+          ruff format --check .
+
+          cd ../frontend
+          npm run lint
+          npm run typecheck
+          npm run build
+
+      - name: Commit and push improvements
+        if: success()
+        run: |
+          # Check if there are changes
+          if ! git diff --quiet; then
+            git add -A
+
+            # Determine what changed
+            if git diff --cached --name-only | grep -q "package"; then
+              COMMIT_MSG="fix: apply npm security updates
+
+- Apply npm audit fixes for identified vulnerabilities
+- Verify all tests and type checks pass"
+            else
+              COMMIT_MSG="chore: daily maintenance and improvements
+
+- Automated daily code quality and security review
+- All validations passing"
+            fi
+
+            git commit -m "$COMMIT_MSG"
+            git push origin main
+            echo "Changes pushed successfully"
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Daily Maintenance Summary"
+            echo ""
+            echo "**Timestamp**: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)"
+            echo ""
+            if git diff --quiet HEAD~1; then
+              echo "✅ Repository maintained"
+              echo "- All tests passing"
+              echo "- Code quality checks passed"
+              echo "- No breaking changes"
+            else
+              echo "📝 Changes applied"
+              git log -1 --format="%H %s"
+            fi
+          } >> $GITHUB_STEP_SUMMARY

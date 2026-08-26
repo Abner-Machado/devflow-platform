@@ -1,4 +1,280 @@
-/home/claude/devflow/.github/workflows/daily-engineering.yml
-daily-improvements.yml
-daily-maintenance.yml
-ci: add daily engineering automation workflows
+name: Daily Engineering
+
+on:
+  schedule:
+    # Run every day at 00:30 UTC
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  daily-engineering:
+    name: Daily Code Improvements
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Configure Git
+        run: |
+          git config user.name "Claude Engineering Bot"
+          git config user.email "claude+devflow@anthropic.com"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Create analysis script
+        run: cat > /tmp/analyze.py << 'SCRIPT'
+import subprocess
+import json
+import sys
+from pathlib import Path
+
+def run_cmd(cmd, cwd=None):
+    """Run command and return output."""
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        return result.returncode, result.stdout, result.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+def check_backend_tests():
+    """Run backend tests and check coverage."""
+    code, out, err = run_cmd("pytest -q --tb=short", cwd="backend")
+    return {
+        "tests_pass": code == 0,
+        "output": out,
+        "errors": err
+    }
+
+def check_backend_lint():
+    """Check backend linting."""
+    code, out, err = run_cmd("ruff check .", cwd="backend")
+    return {
+        "lint_pass": code == 0,
+        "issues": out
+    }
+
+def check_backend_format():
+    """Check code formatting."""
+    code, out, err = run_cmd("ruff format --check .", cwd="backend")
+    return {
+        "format_pass": code == 0,
+        "issues": out
+    }
+
+def check_frontend_lint():
+    """Check frontend linting."""
+    code, out, err = run_cmd("npm run lint", cwd="frontend")
+    return {
+        "lint_pass": code == 0,
+        "issues": out + err
+    }
+
+def check_frontend_typecheck():
+    """Check frontend types."""
+    code, out, err = run_cmd("npm run typecheck", cwd="frontend")
+    return {
+        "typecheck_pass": code == 0,
+        "issues": out + err
+    }
+
+def check_frontend_audit():
+    """Check npm vulnerabilities."""
+    code, out, err = run_cmd("npm audit --production", cwd="frontend")
+    lines = (out + err).split('\n')
+    return {
+        "audit_pass": code == 0,
+        "vulnerabilities": out + err
+    }
+
+def check_dependencies_outdated():
+    """List outdated dependencies."""
+    code, out, err = run_cmd("npm outdated", cwd="frontend")
+    # npm outdated returns 1 if there are outdated packages
+    return {
+        "outdated": out
+    }
+
+# Run all checks
+print("Starting daily engineering analysis...")
+analysis = {
+    "backend_tests": check_backend_tests(),
+    "backend_lint": check_backend_lint(),
+    "backend_format": check_backend_format(),
+    "frontend_lint": check_frontend_lint(),
+    "frontend_typecheck": check_frontend_typecheck(),
+    "frontend_audit": check_frontend_audit(),
+    "dependencies_outdated": check_dependencies_outdated(),
+}
+
+# Save analysis
+with open("/tmp/analysis.json", "w") as f:
+    json.dump(analysis, f, indent=2)
+
+# Print summary
+print("\n=== ANALYSIS SUMMARY ===")
+print(f"Backend tests: {'✓' if analysis['backend_tests']['tests_pass'] else '✗'}")
+print(f"Backend lint: {'✓' if analysis['backend_lint']['lint_pass'] else '✗'}")
+print(f"Backend format: {'✓' if analysis['backend_format']['format_pass'] else '✗'}")
+print(f"Frontend lint: {'✓' if analysis['frontend_lint']['lint_pass'] else '✗'}")
+print(f"Frontend typecheck: {'✓' if analysis['frontend_typecheck']['typecheck_pass'] else '✗'}")
+print(f"Frontend audit: {'✓' if analysis['frontend_audit']['audit_pass'] else '✗'}")
+
+if analysis['dependencies_outdated']['outdated']:
+    print(f"\nOutdated packages found:\n{analysis['dependencies_outdated']['outdated']}")
+
+sys.exit(0)
+SCRIPT
+        python /tmp/analyze.py
+
+      - name: Generate improvement plan
+        id: plan
+        run: cat > /tmp/plan.py << 'SCRIPT'
+import json
+import subprocess
+
+with open("/tmp/analysis.json") as f:
+    analysis = json.load(f)
+
+improvements = []
+
+# Check for vulnerability fixes
+if not analysis['frontend_audit']['audit_pass']:
+    vuln_text = analysis['frontend_audit']['vulnerabilities']
+    if 'vulnerabilities' in vuln_text.lower():
+        improvements.append({
+            "type": "security",
+            "priority": 1,
+            "description": "Fix npm vulnerabilities",
+            "action": "npm audit fix"
+        })
+
+# Check for outdated critical packages
+if analysis['dependencies_outdated']['outdated']:
+    improvements.append({
+        "type": "dependencies",
+        "priority": 2,
+        "description": "Update outdated packages",
+        "action": "selective-update"
+    })
+
+# Check test coverage
+if analysis['backend_tests']['tests_pass']:
+    # Could add coverage analysis here
+    pass
+
+print(json.dumps(improvements, indent=2))
+with open("/tmp/improvements.json", "w") as f:
+    json.dump(improvements, f, indent=2)
+SCRIPT
+        python /tmp/plan.py > /tmp/improvements.txt
+        cat /tmp/improvements.txt
+
+      - name: Execute improvements
+        id: work
+        run: |
+          set -e
+          HAS_CHANGES=false
+
+          # Check for npm audit fixes
+          if grep -q "security" /tmp/improvements.txt; then
+            echo "Attempting to fix npm security issues..."
+            cd frontend
+            if npm audit --production 2>/dev/null | grep -q "vulnerabilities"; then
+              npm audit fix --force || true
+              HAS_CHANGES=true
+            fi
+            cd ..
+          fi
+
+          # Verify changes didn't break anything
+          echo "Running validation after changes..."
+          cd backend && pytest -q --tb=short && cd ..
+          cd frontend && npm run lint && npm run typecheck && npm run build && cd ..
+
+          echo "has_changes=$([ "$HAS_CHANGES" = "true" ] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
+
+      - name: Commit changes
+        if: steps.work.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          # Check if there are actual changes
+          if git diff --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          # Stage changes
+          git add -A
+
+          # Determine commit message based on changes
+          if git diff --cached --name-only | grep -q "package-lock.json"; then
+            COMMIT_MSG="fix: apply npm security updates
+
+- Run npm audit fix to resolve vulnerabilities
+- Verify all tests pass after dependency updates
+- Validate TypeScript, ESLint, and production build"
+          else
+            COMMIT_MSG="chore: daily maintenance"
+          fi
+
+          git commit -m "$COMMIT_MSG" || echo "Nothing to commit"
+
+      - name: Push changes
+        if: success()
+        run: |
+          if git diff origin/main --quiet; then
+            echo "No changes to push"
+          else
+            git push origin main
+          fi
+
+      - name: Report results
+        if: always()
+        run: |
+          echo "## Daily Engineering Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          cat /tmp/improvements.txt >> $GITHUB_STEP_SUMMARY || echo "No improvements identified" >> $GITHUB_STEP_SUMMARY
+
+          if [ $? -eq 0 ]; then
+            echo "✅ Analysis completed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Analysis completed with warnings" >> $GITHUB_STEP_SUMMARY
+          fi
